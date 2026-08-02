@@ -1,0 +1,153 @@
+/* ============================================
+   SmartExamAI — Styles globaux
+   ============================================ */
+
+:root {
+  --primary: #3f51b5;
+  --primary-dark: #303f9f;
+  --primary-light: #c5cae9;
+  --accent: #ff4081;
+  --success: #4caf50;
+  --warning: #ff9800;
+  --error: #f44336;
+  --info: #2196f3;
+  --bg: #f5f6fa;
+  --surface: #ffffff;
+  --text: #212121;
+  --text-secondary: #757575;
+  --border: #e0e0e0;
+  --shadow-sm: 0 1px 3px rgba(0,0,0,.08);
+  --shadow-md: 0 4px 12px rgba(0,0,0,.1);
+  --shadow-lg: 0 8px 24px rgba(0,0,0,.15);
+  --radius: 8px;
+  --radius-lg: 12px;
+  --sidebar-width: 260px;
+  --navbar-height: 64px;
+  --transition: .25s ease;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  height: 100%;
+  font-family: 'Roboto', 'Segoe UI', system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+a { color: var(--primary); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+h1, h2, h3, h4 { font-weight: 500; color: var(--text); }
+h1 { font-size: 28px; margin-bottom: 8px; }
+h2 { font-size: 22px; margin-bottom: 16px; }
+h3 { font-size: 18px; margin-bottom: 12px; }
+
+.page { padding: 24px 32px; }
+.page-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 24px;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
+.text-muted { color: var(--text-secondary); }
+.text-success { color: var(--success); }
+.text-warning { color: var(--warning); }
+.text-error { color: var(--error); }
+
+/* Layout principal */
+.app-layout {
+  display: flex;
+  min-height: 100vh;
+}
+.main-content {
+  flex: 1;
+  margin-left: var(--sidebar-width);
+  margin-top: var(--navbar-height);
+  padding-bottom: 40px;
+  transition: margin var(--transition);
+}
+
+/* Utilitaires */
+.flex { display: flex; }
+.flex-col { flex-direction: column; }
+.items-center { align-items: center; }
+.justify-between { justify-content: space-between; }
+.gap-8 { gap: 8px; }
+.gap-16 { gap: 16px; }
+.gap-24 { gap: 24px; }
+.mt-16 { margin-top: 16px; }
+.mt-24 { margin-top: 24px; }
+.mb-16 { margin-bottom: 16px; }
+.mb-24 { margin-bottom: 24px; }
+
+/* Animations */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.fade-in { animation: fadeIn .3s ease; }
+
+/* Responsive */
+@media (max-width: 992px) {
+  .main-content { margin-left: 0; }
+}
+/* ============================================
+   Couleurs par rôle
+   ============================================ */
+
+/* Admin — BLEU (par défaut, déjà défini) */
+[data-role="admin"] {
+  --primary: #3f51b5;
+  --primary-dark: #303f9f;
+  --primary-light: #c5cae9;
+  --primary-rgb: 63, 81, 181;
+}
+
+/* Professeur — MAUVE */
+[data-role="professeur"] {
+  --primary: #8e44ad;
+  --primary-dark: #6c3483;
+  --primary-light: #d7bde2;
+  --primary-rgb: 142, 68, 173;
+}
+
+/* Étudiant — VERT */
+[data-role="etudiant"] {
+  --primary: #27ae60;
+  --primary-dark: #1e8449;
+  --primary-light: #a9dfbf;
+  --primary-rgb: 39, 174, 96;
+}
+
+/* Ajustements automatiques pour les éléments qui utilisent --primary */
+[data-role] .btn-primary { background: var(--primary); }
+[data-role] .btn-primary:hover { background: var(--primary-dark); }
+[data-role] .stat-icon.primary { background: var(--primary); }
+[data-role] .avatar { background: var(--primary); }
+[data-role] .nav-link.active {
+  background: rgba(var(--primary-rgb), .1);
+  color: var(--primary);
+  border-left-color: var(--primary);
+}
+[data-role] .nav-link:hover {
+  background: rgba(var(--primary-rgb), .06);
+  color: var(--primary);
+}
+[data-role] .form-control:focus {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px rgba(var(--primary-rgb), .15);
+}
+[data-role] .login-wrapper {
+  background: linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%);
+}
+[data-role] .login-logo .material-icons { color: var(--primary); }
+[data-role] .badge-primary {
+  background: rgba(var(--primary-rgb), .15);
+  color: var(--primary);
+}
