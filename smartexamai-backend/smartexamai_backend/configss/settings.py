@@ -51,9 +51,40 @@ class Settings:
     openrouter_key: str | None = os.environ.get("OPENROUTER_API_KEY")
 
     # --- Sécurité ---
+        
     password_hash_iterations: int = int(
         os.environ.get("SMARTEXAM_PBKDF2_ITERATIONS", "260000")
     )
+
+    # --- Environnement d'exécution ---
+    # Valeurs acceptées : "development", "staging", "production"
+    environment: str = os.environ.get("SMARTEXAM_ENVIRONMENT", "development").strip().lower()
+
+    # --- JWT ---
+    # Secret utilisé pour signer/valider les tokens Bearer.
+    # ⚠️ Doit être une valeur forte en production (voir validate_security_configuration dans main.py).
+    jwt_secret: str = os.environ.get(
+        "SMARTEXAM_JWT_SECRET", "dev-secret-change-me-in-production"
+    )
+
+    # Ancien secret JWT, utilisé uniquement pendant une rotation de secret
+    # (pour ne pas invalider brutalement toutes les sessions).
+    jwt_previous_secret: str | None = os.environ.get("SMARTEXAM_JWT_PREVIOUS_SECRET")
+
+    # --- Admin bootstrap ---
+    # Email utilisé si aucun admin n'existe en base au premier démarrage.
+    admin_bootstrap_email: str = os.environ.get(
+        "ADMIN_BOOTSTRAP_EMAIL", "admin@localhost"
+    ).strip().lower()
+
+    # --- CORS ---
+    # Liste blanche des origines autorisées, séparées par des virgules.
+    # Exemple : "http://localhost:5173,https://smartexam.example.com"
+    cors_origins: str = os.environ.get(
+        "SMARTEXAM_CORS_ORIGINS", "http://localhost:5173"
+    )
+
+    # ... (attributs existants) ...
   
     # ... (attributs existants) ...
     
@@ -69,6 +100,19 @@ class Settings:
     docker_timeout: int = int(os.environ.get("DOCKER_TIMEOUT", "10"))
     docker_memory_limit: str = os.environ.get("DOCKER_MEMORY_LIMIT", "256m")
     docker_max_output_size: int = int(os.environ.get("DOCKER_MAX_OUTPUT_SIZE", "1048576"))
+        # --- Méthodes utilitaires ---
+
+    def is_production(self) -> bool:
+        return self.environment in {"production", "prod"}
+
+    def get_cors_origins_list(self) -> list[str]:
+        if not self.cors_origins:
+            return []
+        return [
+            origin.strip()
+            for origin in self.cors_origins.split(",")
+            if origin.strip()
+        ]
 
     def ensure_directories(self) -> None:
         self.storage_root.mkdir(parents=True, exist_ok=True)

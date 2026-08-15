@@ -1,23 +1,12 @@
-"""
-SmartExamAI — Application FastAPI.
 
-Expose, via une API REST/JSON, l'ensemble des fonctionnalités jusque-là
-disponibles uniquement via cli.py : gestion des utilisateurs/classes/
-matières/examens (admin), dépôt et correction automatique des copies,
-définition des ressources et consultation des résultats (professeur),
-consultation des notes (étudiant).
-
-Lancement (depuis le dossier smartexamai_backend) :
-    uvicorn app.main:app --reload --port 8000
-"""
 from __future__ import annotations
 
 import os
-
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-
+from configss.settings import settings
 from core.exceptions import (
     CopieAlreadyProcessingError,
     DuplicateEntityError,
@@ -29,10 +18,61 @@ from db.init_db import init_db
 
 from app.routers import auth, classes, copies, correction, etudiant, examens, matieres, professeur, users
 
+# --- Validation sécurité au démarrage ---
+
+INSECURE_JWT_SECRETS = {
+    "",
+    "dev-secret-change-me-in-production",
+    "change-me",
+    "secret",
+}
+
+
+def validate_security_configuration() -> None:
+    """Refuse le démarrage en production avec une configuration dangereuse."""
+    if not settings.is_production():
+        # En développement, on ne bloque pas, mais on alerte si secret faible.
+        if settings.jwt_secret in INSECURE_JWT_SECRETS:
+            import logging
+            logging.getLogger("smartexamai").warning(
+                "⚠️ SMARTEXAM_JWT_SECRET utilise une valeur par défaut non sécurisée. "
+                "Ce n'est pas bloquant en développement, mais il faudra un secret fort en production."
+            )
+        return
+
+    # En production : validations strictes
+    if settings.jwt_secret in INSECURE_JWT_SECRETS:
+        raise RuntimeError(
+            "🔒 Sécurité : SMARTEXAM_JWT_SECRET doit être défini avec une valeur forte "
+            "en production. Utilisez un secret aléatoire d'au moins 32 caractères."
+        )
+
+    cors_origins = settings.get_cors_origins_list()
+    if "*" in cors_origins:
+        raise RuntimeError(
+            "🔒 Sécurité : SMARTEXAM_CORS_ORIGINS ne doit pas contenir '*' en production. "
+            "Définissez explicitement les origines autorisées."
+        )
+
+    if not cors_origins:
+        raise RuntimeError(
+            "🔒 Sécurité : SMARTEXAM_CORS_ORIGINS doit contenir au moins une origine en production."
+        )
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Avant démarrage : validation sécurité
+    validate_security_configuration()
+    
+    # Initialisation base de données
+    init_db(create_default_admin=True)
+    
+    yield
+    
 app = FastAPI(
     title="SmartExamAI API",
     description="API FastAPI pour la plateforme SmartExamAI (correction automatique de copies d'examen).",
-    version="1.0.0",
+     lifespan=lifespan,
 )
 
 # --- CORS : autorise le frontend React (Vite en dev, build statique en prod) ---
@@ -76,10 +116,6 @@ async def smartexam_error_handler(request: Request, exc: SmartExamError):
 
 
 # --- Initialisation de la base de données au démarrage ---
-
-@app.on_event("startup")
-def on_startup() -> None:
-    init_db(create_default_admin=True)
 
 
 @app.get("/api/health", tags=["health"])
