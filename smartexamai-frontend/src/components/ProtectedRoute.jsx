@@ -18,6 +18,11 @@ export default function ProtectedRoute({ children, roles }) {
     return <Navigate to="/" replace />;
   }
 
+  // ✅ FORCER le changement de mot de passe avant tout accès
+  if (user.must_change_password) {
+    return <Navigate to="/change-password" replace />;
+  }
+
   if (roles && !roles.includes(user.role)) {
     return <Navigate to={`/${user.role}/dashboard`} replace />;
   }

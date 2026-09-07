@@ -1,31 +1,33 @@
-"""LLM Client for SmartExamAI Grading Module using OpenRouter.
 
-Aligné sur le même style que le module de correction de rédaction
-(correction/redaction/services/corrector_service.py) : on utilise
-langchain_openai.ChatOpenAI plutôt que des appels HTTP bruts (requests).
-C'est ce client, avec cette même résolution de clé/headers, qui fonctionne
-de façon fiable avec la configuration OpenRouter du projet.
-"""
-import os
+"""LLM Client for SmartExamAI Grading Module using OpenRouter — SÉCURISÉ."""
+from __future__ import annotations
+
 import json
+import logging
+import os
 from typing import Optional
 
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 
+# Import du module de sécurité
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+from security.llm_guard import extract_json_object, log_llm_call
+
 load_dotenv()
+
+logger = logging.getLogger("smartexamai.llm_client")
+
+# Nombre de tentatives si le JSON est invalide
+MAX_RETRIES = 2
 
 
 class LLMClient:
-    """Wrapper autour de ChatOpenAI (LangChain) pointé sur OpenRouter.
-
-    Même stratégie de résolution de clé API et de configuration que
-    CorrectorService.creer_llm() côté rédaction, pour un comportement
-    identique entre les deux modules de correction.
-    """
+    """Wrapper autour de ChatOpenAI (LangChain) pointé sur OpenRouter — sécurisé."""
 
     def __init__(self, api_key: Optional[str] = None, model: Optional[str] = None):
-        # Même ordre de priorité que corrector_service.creer_llm()
         self.api_key = (
             api_key
             or os.environ.get("OPENROUTER_KEY")
@@ -33,8 +35,6 @@ class LLMClient:
             or os.environ.get("API_KEY")
         )
         self.api_base = os.environ.get("OPENAI_API_BASE") or "https://openrouter.ai/api/v1"
-        # Modèle configurable via l'env (OPENROUTER_MODEL), aligné par défaut
-        # sur le modèle qui fonctionne déjà côté rédaction.
         self.model = model or os.environ.get("OPENROUTER_MODEL") or "qwen/qwen3-14b"
 
         if not self.api_key:
@@ -54,37 +54,72 @@ class LLMClient:
             } if "openrouter" in self.api_base.lower() else None,
         )
 
-    @staticmethod
-    def _parser_json(texte: str) -> dict:
-        """Extrait le JSON de la réponse du LLM (retire un éventuel bloc ```json ... ```).
+    def grade_submission(self, prompt: str, section: str = "code") -> dict:
+        """Envoie le prompt de notation au LLM et retourne le JSON parsé.
 
-        Identique à CorrectorService.parser_json côté rédaction.
+        Avec retry automatique si le JSON est invalide.
         """
-        texte_clean = texte.strip()
-        if texte_clean.startswith("```"):
-            lignes = texte_clean.split("\n")
-            debut, fin = 0, len(lignes)
-            for i, ligne in enumerate(lignes):
-                if ligne.strip().startswith("```"):
-                    if debut == 0:
-                        debut = i + 1
-                    else:
-                        fin = i
-                        break
-            texte_clean = "\n".join(lignes[debut:fin])
-        return json.loads(texte_clean)
+        messages = [{"role": "user", "content": prompt}]
+        last_error: Optional[Exception] = None
 
-    def grade_submission(self, prompt: str) -> dict:
-        """Envoie le prompt de notation au LLM et retourne le JSON parsé."""
-        try:
-            response = self.llm.invoke(prompt)
-            content = response.content
-        except Exception as e:
-            raise RuntimeError(
-                f"Échec de l'appel au LLM (OpenRouter, modèle '{self.model}'): {e}"
-            ) from e
+        for attempt in range(MAX_RETRIES + 1):
+            try:
+                response = self.llm.invoke(messages)
+                content = response.content
+            except Exception as e:
+                log_llm_call(
+                    section=section,
+                    injection_flags=[],
+                    output_valid=False,
+                    error=str(e),
+                )
+                raise RuntimeError(
+                    f"Échec de l'appel au LLM (OpenRouter, modèle '{self.model}'): {e}"
+                ) from e
 
-        try:
-            return self._parser_json(content)
-        except json.JSONDecodeError:
-            raise ValueError(f"Le LLM a renvoyé un JSON invalide. Contenu brut: {content}")
+            try:
+                result = extract_json_object(content)
+
+                log_llm_call(
+                    section=section,
+                    injection_flags=[],
+                    output_valid=True,
+                    raw_score=result.get("score"),
+                )
+
+                return result
+
+            except (json.JSONDecodeError, ValueError) as e:
+                last_error = e
+                logger.warning(
+                    "Tentative %d/%d : JSON invalide du LLM. Erreur: %s",
+                    attempt + 1,
+                    MAX_RETRIES + 1,
+                    e,
+                )
+
+                if attempt < MAX_RETRIES:
+                    # Ajouter un message de correction pour le prochain essai
+                    messages.extend([
+                        {"role": "assistant", "content": content},
+                        {
+                            "role": "user",
+                            "content": (
+                                "Your previous response was not valid JSON. "
+                                "Please respond ONLY with a valid JSON object, "
+                                "no markdown, no explanations before or after."
+                            ),
+                        },
+                    ])
+
+        log_llm_call(
+            section=section,
+            injection_flags=[],
+            output_valid=False,
+            error=f"JSON invalide après {MAX_RETRIES + 1} tentatives",
+        )
+
+        raise ValueError(
+            f"Le LLM a renvoyé un JSON invalide après {MAX_RETRIES + 1} tentatives. "
+            f"Dernière erreur: {last_error}"
+        )

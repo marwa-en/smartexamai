@@ -26,23 +26,81 @@ from repositories.user_repository import UserRepository
 from service.admin.examen_service import ExamenService
 from service.professeur.professeur_service import ProfesseurService
 
-router = APIRouter(prefix="/api/professeur", tags=["professeur"], dependencies=[Depends(require_professeur)])
+router = APIRouter(
+    prefix="/api/professeur",
+    tags=["professeur"],
+    dependencies=[Depends(require_professeur)],
+)
+
+# ============================================================================
+# Configuration de sécurité des uploads
+# ============================================================================
+
+# Extensions autorisées pour les ressources pédagogiques
+ALLOWED_RESOURCE_EXTENSIONS = {
+    ".txt", ".pdf", ".csv", ".json",
+    ".py", ".java", ".c", ".cpp", ".php",
+    ".png", ".jpg", ".jpeg",
+}
+
+# Taille maximale par fichier (10 Mo)
+MAX_RESOURCE_SIZE = 10 * 1024 * 1024
 
 
-@router.get("/examens", response_model=List[ExamenOut])
-def mes_examens(db: Session = Depends(get_db), current_user: User = Depends(require_professeur)):
-    examens = ExamenService(db).list_examens()
-    mine = [e for e in examens if e.professeur_id == current_user.id]
-    return [serialize_examen(e) for e in mine]
+# ============================================================================
+# Fonctions de validation
+# ============================================================================
+
+def _validate_resource_extension(filename: str) -> str:
+    """Valide l'extension d'un fichier ressource."""
+    ext = Path(filename).suffix.lower()
+    if ext not in ALLOWED_RESOURCE_EXTENSIONS:
+        allowed = ", ".join(sorted(ALLOWED_RESOURCE_EXTENSIONS))
+        raise HTTPException(
+            status_code=415,
+            detail=f"Extension '{ext}' non autorisée. Extensions acceptées : {allowed}",
+        )
+    return ext
 
 
 async def _save_upload(upload: Optional[UploadFile], tmp_dir: Path) -> Optional[Path]:
+    """Sauvegarde un fichier uploadé de manière sécurisée."""
     if upload is None or not upload.filename:
         return None
-    dest = tmp_dir / f"{uuid.uuid4().hex}_{upload.filename}"
+
+    # ✅ 1. Valider l'extension
+    ext = _validate_resource_extension(upload.filename)
+
+    # ✅ 2. Lire le contenu
     content = await upload.read()
+
+    # ✅ 3. Vérifier la taille
+    if len(content) > MAX_RESOURCE_SIZE:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Le fichier '{upload.filename}' dépasse la taille maximale de 10 Mo.",
+        )
+
+    # ✅ 4. Nom de fichier généré côté serveur (jamais le nom original)
+    safe_filename = f"{uuid.uuid4().hex}{ext}"
+    dest = tmp_dir / safe_filename
     dest.write_bytes(content)
+
     return dest
+
+
+# ============================================================================
+# Endpoints
+# ============================================================================
+
+@router.get("/examens", response_model=List[ExamenOut])
+def mes_examens(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_professeur),
+):
+    examens = ExamenService(db).list_examens()
+    mine = [e for e in examens if e.professeur_id == current_user.id]
+    return [serialize_examen(e) for e in mine]
 
 
 @router.post("/examens/{examen_id}/ressources", response_model=ExamResourcesOut)
@@ -60,11 +118,7 @@ async def definir_ressources(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_professeur),
 ):
-    """Dépose/mets à jour les ressources pédagogiques d'un examen.
-
-    `data` est une chaîne JSON correspondant à DefinirRessourcesRequest
-    (sections, scoring_system, métadonnées rédaction/code).
-    """
+    """Dépose/mets à jour les ressources pédagogiques d'un examen."""
     try:
         payload = DefinirRessourcesRequest.model_validate(json.loads(data))
     except (json.JSONDecodeError, ValueError):
@@ -72,6 +126,7 @@ async def definir_ressources(
 
     tmp_dir = Path(tempfile.mkdtemp(prefix="smartexam_res_"))
     saved: List[Path] = []
+
     try:
         consignes_p = await _save_upload(consignes, tmp_dir)
         corrige_p = await _save_upload(corrige, tmp_dir)
@@ -112,6 +167,7 @@ async def definir_ressources(
         db.flush()
         db.refresh(ressources)
         return serialize_resources(ressources)
+
     finally:
         for p in saved:
             p.unlink(missing_ok=True)
@@ -122,13 +178,18 @@ async def definir_ressources(
 
 
 @router.get("/examens/{examen_id}/resultats", response_model=List[ResultatOut])
-def consulter_resultats(examen_id: int, db: Session = Depends(get_db), current_user: User = Depends(require_professeur)):
+def consulter_resultats(
+    examen_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_professeur),
+):
     try:
         resultats = ProfesseurService(db).consulter_resultats(examen_id, current_user.id)
     except ExamenNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except PermissionDeniedError as exc:
         raise HTTPException(status_code=403, detail=str(exc))
+
     user_repo = UserRepository(db)
     out = []
     for r in resultats:
@@ -138,7 +199,11 @@ def consulter_resultats(examen_id: int, db: Session = Depends(get_db), current_u
 
 
 @router.get("/examens/{examen_id}/statistiques", response_model=StatistiquesOut)
-def statistiques(examen_id: int, db: Session = Depends(get_db), current_user: User = Depends(require_professeur)):
+def statistiques(
+    examen_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_professeur),
+):
     try:
         stats = ProfesseurService(db).statistiques_examen(examen_id, current_user.id)
     except ExamenNotFoundError as exc:
@@ -149,13 +214,21 @@ def statistiques(examen_id: int, db: Session = Depends(get_db), current_user: Us
 
 
 @router.post("/resultats/{resultat_id}/valider", response_model=ResultatOut)
-def valider_note(resultat_id: int, payload: ValiderNoteRequest, db: Session = Depends(get_db), current_user: User = Depends(require_professeur)):
+def valider_note(
+    resultat_id: int,
+    payload: ValiderNoteRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_professeur),
+):
     try:
-        resultat = ProfesseurService(db).valider_note(resultat_id, current_user.id, payload.commentaire)
+        resultat = ProfesseurService(db).valider_note(
+            resultat_id, current_user.id, payload.commentaire
+        )
     except ResultatNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except PermissionDeniedError as exc:
         raise HTTPException(status_code=403, detail=str(exc))
+
     db.flush()
     db.refresh(resultat)
     user_repo = UserRepository(db)
@@ -164,7 +237,12 @@ def valider_note(resultat_id: int, payload: ValiderNoteRequest, db: Session = De
 
 
 @router.post("/resultats/{resultat_id}/ajuster", response_model=ResultatOut)
-def ajuster_note(resultat_id: int, payload: AjusterNoteRequest, db: Session = Depends(get_db), current_user: User = Depends(require_professeur)):
+def ajuster_note(
+    resultat_id: int,
+    payload: AjusterNoteRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_professeur),
+):
     try:
         resultat = ProfesseurService(db).ajuster_note(
             resultat_id, current_user.id, payload.nouvelle_note, payload.commentaire
@@ -173,6 +251,7 @@ def ajuster_note(resultat_id: int, payload: AjusterNoteRequest, db: Session = De
         raise HTTPException(status_code=404, detail=str(exc))
     except PermissionDeniedError as exc:
         raise HTTPException(status_code=403, detail=str(exc))
+
     db.flush()
     db.refresh(resultat)
     user_repo = UserRepository(db)
