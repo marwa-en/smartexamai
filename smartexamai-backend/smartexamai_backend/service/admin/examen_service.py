@@ -5,7 +5,7 @@ from datetime import date
 from typing import List, Optional
 
 from sqlalchemy.orm import Session
-
+from sqlalchemy import select
 from core.exceptions import ExamenNotFoundError
 from modelss.exam import Examen, ExamResources
 from repositories.exam_repository import ExamenRepository, ExamResourcesRepository
@@ -82,3 +82,7 @@ class ExamenService:
         if examen is None:
             raise ExamenNotFoundError(f"Examen id={examen_id} introuvable.")
         return examen
+    def list_examens_by_professeur(self, professeur_id: int) -> List[Examen]:
+
+     stmt = select(Examen).where(Examen.professeur_id == professeur_id)
+     return list(self.db.execute(stmt).scalars().all())

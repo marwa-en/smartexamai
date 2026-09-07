@@ -3,15 +3,19 @@ import * as endpoints from '../api/endpoints';
 
 const AuthContext = createContext(null);
 
+const TOKEN_KEY = 'smartexam_token';
+const REFRESH_KEY = 'smartexam_refresh';
+const USER_KEY = 'smartexam_user';
+
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(() => {
-    const raw = localStorage.getItem('smartexam_user');
+    const raw = localStorage.getItem(USER_KEY);
     return raw ? JSON.parse(raw) : null;
   });
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const token = localStorage.getItem('smartexam_token');
+    const token = localStorage.getItem(TOKEN_KEY);
     if (!token) {
       setLoading(false);
       return;
@@ -20,29 +24,55 @@ export function AuthProvider({ children }) {
       .me()
       .then((res) => {
         setUser(res.data);
-        localStorage.setItem('smartexam_user', JSON.stringify(res.data));
+        localStorage.setItem(USER_KEY, JSON.stringify(res.data));
       })
       .catch(() => {
-        localStorage.removeItem('smartexam_token');
-        localStorage.removeItem('smartexam_user');
+        localStorage.removeItem(TOKEN_KEY);
+        localStorage.removeItem(REFRESH_KEY);
+        localStorage.removeItem(USER_KEY);
         setUser(null);
       })
       .finally(() => setLoading(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  async function doLogin(username, password) {
+  /**
+   * Login : stocke access + refresh tokens.
+   * Retourne le PAYLOAD COMPLET (pas juste l'user) pour permettre
+   * à Login.jsx de détecter must_change_password.
+   */
+   async function doLogin(username, password) {
     const res = await endpoints.login(username, password);
-    localStorage.setItem('smartexam_token', res.data.access_token);
-    localStorage.setItem('smartexam_user', JSON.stringify(res.data.user));
-    setUser(res.data.user);
-    return res.data.user;
+    const data = res.data;
+
+    localStorage.setItem('smartexam_token', data.access_token);
+    if (data.refresh_token) {
+      localStorage.setItem('smartexam_refresh', data.refresh_token);
+    }
+    localStorage.setItem('smartexam_user', JSON.stringify(data.user));
+    setUser(data.user);
+
+    // ✅ CRUCIAL : retourner le PAYLOAD COMPLET, pas juste user
+    return data;
   }
 
-  function doLogout() {
-    localStorage.removeItem('smartexam_token');
-    localStorage.removeItem('smartexam_user');
-    setUser(null);
+  /**
+   * Logout serveur-side : révoque le refresh token.
+   */
+  async function doLogout() {
+    const refreshToken = localStorage.getItem(REFRESH_KEY);
+    try {
+      if (refreshToken && endpoints.logoutApi) {
+        await endpoints.logoutApi(refreshToken);
+      }
+    } catch {
+      // Même si le serveur est injoignable, on nettoie côté client
+    } finally {
+      localStorage.removeItem(TOKEN_KEY);
+      localStorage.removeItem(REFRESH_KEY);
+      localStorage.removeItem(USER_KEY);
+      setUser(null);
+    }
   }
 
   return (

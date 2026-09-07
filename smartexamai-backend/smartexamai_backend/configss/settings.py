@@ -87,6 +87,15 @@ class Settings:
     # ... (attributs existants) ...
   
     # ... (attributs existants) ...
+        # --- Durées de vie des tokens ---
+    # Access token court (15 min par défaut)
+    jwt_access_token_expire_minutes: int = int(
+        os.environ.get("SMARTEXAM_ACCESS_TOKEN_MINUTES", "15")
+    )
+    # Refresh token long (14 jours par défaut)
+    refresh_token_expire_days: int = int(
+        os.environ.get("SMARTEXAM_REFRESH_TOKEN_DAYS", "14")
+    )
     
     # --- Configuration du pipeline de correction code (sandbox Docker) ---
     # Ces valeurs sont utilisées par correction/code/sandbox/
@@ -117,6 +126,7 @@ class Settings:
     def ensure_directories(self) -> None:
         self.storage_root.mkdir(parents=True, exist_ok=True)
         self.pipeline_work_root.mkdir(parents=True, exist_ok=True)
+    
 
 
 settings = Settings()

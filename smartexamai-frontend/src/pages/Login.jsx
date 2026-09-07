@@ -18,13 +18,26 @@ export default function Login() {
   const { login } = useAuth();
   const navigate = useNavigate();
 
-  async function handleSubmit(e) {
+        async function handleSubmit(e) {
     e.preventDefault();
     setError('');
     setLoading(true);
     try {
-      const user = await login(username, password);
-      navigate(`/${user.role}/dashboard`, { replace: true });
+      const result = await login(username, password);
+      
+      console.log('🔍 Result du login:', result);
+      console.log('🔍 must_change_password:', result?.must_change_password);
+      
+      const u = result?.user || result;
+
+      if (result?.must_change_password || u?.must_change_password) {
+        console.log('🚀 Redirection forcée vers /change-password');
+        // ✅ Utiliser window.location au lieu de navigate
+        window.location.href = '/change-password';
+        return;
+      }
+
+      navigate(`/${u.role}/dashboard`, { replace: true });
     } catch (err) {
       setError(extractErrorMessage(err));
     } finally {

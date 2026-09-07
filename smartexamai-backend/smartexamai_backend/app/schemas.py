@@ -35,6 +35,8 @@ class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
     user: UserOut
+    must_change_password: bool = False
+    refresh_token: Optional[str] = None   # ✅ NOUVEAU
 
 
 # ---------------------------------------------------------------------------

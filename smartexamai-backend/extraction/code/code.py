@@ -8,7 +8,9 @@ from pathlib import Path
 from typing import Tuple, Optional, Dict, Any
 from dotenv import load_dotenv
 from mistralai.client import Mistral
-
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+from security.llm_guard import detect_prompt_injection, sanitize_llm_text, log_llm_call
 load_dotenv()
 
 
@@ -188,6 +190,12 @@ def extract_code(image_path: str, teacher_input: Dict[str, Any], api_key: str = 
     pixtral = PixtralClient(api_key=api_key)
     raw_code = extract_code_from_response(pixtral.generate(build_code_prompt(teacher_input), image_path))
     cleaned = clean_code(raw_code)
+    # ✅ NOUVEAU : Détecter les tentatives d'injection dans le code extrait
+    injection_flags = detect_prompt_injection(cleaned)
+
+    # ✅ NOUVEAU : Sanitiser le code
+    cleaned = sanitize_llm_text(cleaned, max_length=50_000)
+
 
     # Balises PHP automatiques
     final_code = cleaned
@@ -200,8 +208,17 @@ def extract_code(image_path: str, teacher_input: Dict[str, Any], api_key: str = 
     result = {
         'code': final_code,
         'language': language,
+        'injection_flags': injection_flags,
+        'requires_human_review': len(injection_flags) > 0,
        
     }
+    log_llm_call(
+        section="code_extraction",
+        injection_flags=injection_flags,
+        output_valid=is_valid,
+        error=error if not is_valid else None,
+    )
+
 
     with open("code.json", "w", encoding="utf-8") as f:
         json.dump(result, f, ensure_ascii=False, indent=2)

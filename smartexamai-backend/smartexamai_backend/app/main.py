@@ -17,6 +17,8 @@ from core.exceptions import (
 from db.init_db import init_db
 
 from app.routers import auth, classes, copies, correction, etudiant, examens, matieres, professeur, users
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import JSONResponse
 
 # --- Validation sécurité au démarrage ---
 
@@ -68,6 +70,69 @@ async def lifespan(app: FastAPI):
     init_db(create_default_admin=True)
     
     yield
+class AdvancedSecurityHeadersMiddleware(BaseHTTPMiddleware):
+    """Headers de sécurité avancés sur toutes les réponses."""
+
+    async def dispatch(self, request, call_next):
+        response = await call_next(request)
+        path = request.url.path
+
+        # --- Anti-MIME-sniffing & clickjacking ---
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+
+        # --- CSP : frame-ancestors 'none' = protection clickjacking moderne ---
+        # (skip pour /docs afin que Swagger reste utilisable en dev)
+        if not path.startswith(("/docs", "/redoc", "/openapi.json")):
+            response.headers["Content-Security-Policy"] = (
+                "default-src 'none'; frame-ancestors 'none'; base-uri 'none'"
+            )
+
+        # --- Confidentialité ---
+        response.headers["Referrer-Policy"] = "no-referrer"
+        response.headers["Permissions-Policy"] = (
+            "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
+        )
+
+        # --- Isolation cross-origin ---
+        response.headers["Cross-Origin-Opener-Policy"] = "same-origin"
+        response.headers["Cross-Origin-Resource-Policy"] = "same-origin"
+        response.headers["X-Permitted-Cross-Domain-Policies"] = "none"
+
+        # --- HSTS uniquement en production (nécessite HTTPS) ---
+        if settings.is_production():
+            response.headers["Strict-Transport-Security"] = (
+                "max-age=63072000; includeSubDomains; preload"
+            )
+
+        return response
+
+
+class CSRFProtectionMiddleware(BaseHTTPMiddleware):
+    """Défense en profondeur anti-CSRF.
+
+    L'auth utilise des Bearer tokens (pas de cookies) donc le CSRF est déjà
+    structurellement mitigé. Ce middleware ajoute une vérification d'Origin
+    sur les requêtes mutantes envoyées par un navigateur.
+    """
+
+    SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
+
+    async def dispatch(self, request, call_next):
+        if request.method not in self.SAFE_METHODS:
+            origin = request.headers.get("origin")
+
+            # Les appels sans Origin (curl, serveur-à-serveur) passent.
+            # Les navigateurs envoient TOUJOURS Origin sur POST/PUT/DELETE.
+            if origin:
+                allowed = settings.get_cors_origins_list()
+                if origin not in allowed:
+                    return JSONResponse(
+                        status_code=403,
+                        content={"detail": "Origine non autorisée (protection CSRF)."},
+                    )
+
+        return await call_next(request)
     
 app = FastAPI(
     title="SmartExamAI API",
@@ -78,10 +143,11 @@ app = FastAPI(
 # --- CORS : autorise le frontend React (Vite en dev, build statique en prod) ---
 _default_origins = "http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000"
 _allowed_origins = os.environ.get("SMARTEXAM_CORS_ORIGINS", _default_origins).split(",")
-
+app.add_middleware(CSRFProtectionMiddleware)           # le plus interne
+app.add_middleware(AdvancedSecurityHeadersMiddleware)            # le plus externe (déjà présent)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_allowed_origins,
+    allow_origins=settings.get_cors_origins_list(),  # ← liste des origines
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
