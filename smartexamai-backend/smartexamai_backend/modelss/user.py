@@ -24,6 +24,15 @@ class User(Base):
     prenom: Mapped[str] = mapped_column(String(100))
     cne: Mapped[Optional[str]] = mapped_column(String(30), nullable=True, unique=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    # ✅ NOUVEAU CHAMP : force le changement de mot de passe à la première connexion
+    must_change_password: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False
+    )
+    # ✅ NOUVEAU : Protection brute-force
+    failed_login_count: Mapped[int] = mapped_column(default=0, nullable=False)
+    locked_until: Mapped[Optional[datetime]] = mapped_column(
+        DateTime, nullable=True, default=None
+    )
 
     # Uniquement pertinent pour les étudiants
     classe_id: Mapped[Optional[int]] = mapped_column(

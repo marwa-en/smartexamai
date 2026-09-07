@@ -16,12 +16,28 @@ import Correction from './pages/Correction';
 import ExamensProfesseur from './pages/ExamensProfesseur';
 import ResultatsProfesseur from './pages/ResultatsProfesseur';
 import NotesEtudiant from './pages/NotesEtudiant';
+import ChangePassword from './pages/ChangePassword';
 
 function HomeRedirect() {
   const { user, loading } = useAuth();
   if (loading) return null;
   if (user) return <Navigate to={`/${user.role}/dashboard`} replace />;
   return <Login />;
+}
+function ChangePasswordGate() {
+  const { user, loading } = useAuth();
+
+  if (loading) return null;
+
+  // Non connecté → retour accueil
+  if (!user) return <Navigate to="/" replace />;
+
+  // Mot de passe déjà changé → pas besoin d'y aller
+  if (!user.must_change_password) {
+    return <Navigate to={`/${user.role}/dashboard`} replace />;
+  }
+
+  return <ChangePassword />;
 }
 
 export default function App() {
@@ -30,6 +46,10 @@ export default function App() {
       <AuthProvider>
         <Routes>
           <Route path="/" element={<HomeRedirect />} />
+          
+          {/* ✅ Route publique pour changement de mot de passe */}
+          {/* Nouveau ✅ */}
+<Route path="/change-password" element={<ChangePasswordGate />} />
 
           {/* --- Admin --- */}
           <Route

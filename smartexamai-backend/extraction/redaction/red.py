@@ -3,6 +3,13 @@ import base64
 import json
 from mistralai.client import Mistral
 from dotenv import load_dotenv
+import logging
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+from security.llm_guard import detect_prompt_injection, sanitize_llm_text, log_llm_call
+
+logger = logging.getLogger("smartexamai.redaction")
 load_dotenv()
 
 
@@ -78,7 +85,38 @@ def process_exam_image(image_path: str, matiere: str, type_examen: str, consigne
 
     try:
         return json.loads(raw_content)
+        extracted_text = ""
+        if "extracted_content" in result and isinstance(result["extracted_content"], list):
+            for item in result["extracted_content"]:
+                if isinstance(item, dict) and "value" in item:
+                    extracted_text += str(item["value"]) + "\n"
+
+        injection_flags = detect_prompt_injection(extracted_text)
+
+        if injection_flags:
+            logger.warning(
+                "⚠️ Tentative de prompt injection détectée dans la rédaction : %s",
+                injection_flags,
+            )
+            result["injection_flags"] = injection_flags
+            result["requires_human_review"] = True
+
+        log_llm_call(
+            section="redaction_extraction",
+            injection_flags=injection_flags,
+            output_valid=True,
+        )
+
+        return result
+
     except json.JSONDecodeError:
+        log_llm_call(
+            section="redaction_extraction",
+            injection_flags=[],
+            output_valid=False,
+            error="JSON invalide",
+        )
         return None
+   
 
 

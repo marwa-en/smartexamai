@@ -789,81 +789,97 @@ class SmartExamOrchestrator:
             raise CorrectionError("Échec correction rédaction", step="correction", section="redaction", cause=exc) from exc
 
     def _correct_code(self, code_extraction: Dict[str, Any]) -> Dict[str, Any]:
-        try:
-            from models.exercise import Exercise, ExerciseType, TestCase
-            from preprocessing.cleaner import CodeCleaner
-            from preprocessing.language_detector import LanguageDetector
-            from preprocessing.validator import SubmissionValidator
-            from preprocessing.syntax_repair import repair_code
-            from sandbox.python_runner import PythonRunner
-            from sandbox.c_runner import CRunner
-            from sandbox.java_runner import JavaRunner
-            from sandbox.php_runner import PhpRunner
-            from grading.grader import CodeGrader
-            
-            student_code = code_extraction.get("code", "")
-            meta = self.config.code_exercise
+      try:
+        from models.exercise import Exercise, ExerciseType, TestCase
+        from preprocessing.cleaner import CodeCleaner
+        from preprocessing.language_detector import LanguageDetector
+        from preprocessing.validator import SubmissionValidator
+        from preprocessing.syntax_repair import repair_code
+        from sandbox.python_runner import PythonRunner
+        from sandbox.c_runner import CRunner
+        from sandbox.java_runner import JavaRunner
+        from sandbox.php_runner import PhpRunner
+        from grading.grader import CodeGrader
+        
+        student_code = code_extraction.get("code", "")
+        meta = self.config.code_exercise
 
-            with open(self.config.unit_tests_path, encoding="utf-8") as f:
-                raw_tests = json.load(f)
-            test_cases = [
-                TestCase(input_data=str(t["input"]), expected_output=str(t["expected"]))
-                for t in raw_tests
-            ]
+        with open(self.config.unit_tests_path, encoding="utf-8") as f:
+            raw_tests = json.load(f)
+        test_cases = [
+            TestCase(input_data=str(t["input"]), expected_output=str(t["expected"]))
+            for t in raw_tests
+        ]
 
-            exercise_type = ExerciseType.FUNCTION if meta.exercise_type.lower() == "function" else ExerciseType.PROGRAM
-            
-            # <--- NOUVEAU : Utilisation des consignes de code spécifiques (avec fallback sur les consignes générales)
-            consignes_file = self.config.code_consignes_path or self.config.consignes_path
-            consignes_text = consignes_file.read_text(encoding="utf-8")
-            
-            reference_solution = self.config.corrige_path.read_text(encoding="utf-8")
+        exercise_type = ExerciseType.FUNCTION if meta.exercise_type.lower() == "function" else ExerciseType.PROGRAM
+        
+        consignes_file = self.config.code_consignes_path or self.config.consignes_path
+        consignes_text = consignes_file.read_text(encoding="utf-8")
+        
+        reference_solution = self.config.corrige_path.read_text(encoding="utf-8")
 
-            exercise = Exercise(
-                title=meta.title,
-                statement=consignes_text,
-                language=meta.language.lower(),
-                type=exercise_type,
-                rubric=meta.rubric,
-                test_cases=test_cases,
-                reference_solution=reference_solution,
-                function_name=meta.function_name,
-                consignes=consignes_text,
+        exercise = Exercise(
+            title=meta.title,
+            statement=consignes_text,
+            language=meta.language.lower(),
+            type=exercise_type,
+            rubric=meta.rubric,
+            test_cases=test_cases,
+            reference_solution=reference_solution,
+            function_name=meta.function_name,
+            consignes=consignes_text,
+        )
+
+        cleaned = CodeCleaner().clean(student_code)
+        language = LanguageDetector().detect(cleaned, hint=meta.language)
+        valid, error = SubmissionValidator().validate(cleaned, language)
+        if not valid:
+            raise CorrectionError(f"Code étudiant invalide : {error}", step="correction", section="code")
+
+        runners: Dict[str, Type] = {
+            "python": PythonRunner,
+            "c": CRunner,
+            "java": JavaRunner,
+            "php": PhpRunner,
+        }
+        runner_cls = runners.get(language)
+        if runner_cls is None:
+            raise CorrectionError(
+                f"Langage non supporté par le sandbox : {language}",
+                step="correction",
+                section="code",
             )
 
-            cleaned = CodeCleaner().clean(student_code)
-            language = LanguageDetector().detect(cleaned, hint=meta.language)
-            valid, error = SubmissionValidator().validate(cleaned, language)
-            if not valid:
-                raise CorrectionError(f"Code étudiant invalide : {error}", step="correction", section="code")
+        runner = runner_cls()
+        execution_report = runner.run(cleaned, exercise, exercise.test_cases)
+        api_key = self.config.openrouter_key or self.config.api_key
+        grader = CodeGrader(api_key=api_key)
+        
+        # ✅ AJOUT 1 : Récupérer les flags d'injection AVANT la notation
+        injection_flags = code_extraction.get("injection_flags", [])
+        requires_review = code_extraction.get("requires_human_review", False)
 
-          
-            runners: Dict[str, Type] = {
-                "python": PythonRunner,
-                "c": CRunner,
-                "java": JavaRunner,
-                "php": PhpRunner,
-            }
-            runner_cls = runners.get(language)
-            if runner_cls is None:
-                raise CorrectionError(
-                    f"Langage non supporté par le sandbox : {language}",
-                    step="correction",
-                    section="code",
-                )
+        if requires_review:
+            self.logger.warning(
+                "⚠️ Code extrait avec suspicion de prompt injection. "
+                "Flags: %s. La copie sera marquée pour revue humaine.",
+                injection_flags,
+            )
+        
+        # Notation par le LLM
+        grading = grader.grade(exercise, cleaned, execution_report, language, cleaned)
+        grading_result = _grading_result_to_dict(grading)
 
-            runner = runner_cls()
-            execution_report = runner.run(cleaned, exercise, exercise.test_cases)
-            api_key = self.config.openrouter_key or self.config.api_key
-            grader = CodeGrader(api_key=api_key)
-            grading = grader.grade(exercise, cleaned, execution_report, language, cleaned)
-            return _grading_result_to_dict(grading)
+        # ✅ AJOUT 2 : Propager les flags d'injection dans le résultat final
+        grading_result["injection_flags"] = injection_flags
+        grading_result["requires_human_review"] = requires_review
 
-        except OrchestratorError:
-            raise
-        except Exception as exc:
-            raise CorrectionError("Échec correction code", step="correction", section="code", cause=exc) from exc
+        return grading_result
 
+      except OrchestratorError:
+        raise
+      except Exception as exc:
+        raise CorrectionError("Échec correction code", step="correction", section="code", cause=exc) from exc
     # ------------------------------------------------------------------
     # Résultat final
     # ------------------------------------------------------------------

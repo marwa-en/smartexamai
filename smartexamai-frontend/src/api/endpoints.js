@@ -58,3 +58,10 @@ export const ajusterNote = (resultatId, nouvelle_note, commentaire) =>
 // --- Étudiant ---
 export const consulterNotes = () => api.get('/api/etudiant/notes');
 export const releveUrl = () => `${api.defaults.baseURL}/api/etudiant/releve`;
+// ... ton code existant ...
+
+export const refresh = (refresh_token) =>
+  api.post('/api/auth/refresh', { refresh_token });
+
+export const logoutApi = (refresh_token) =>
+  api.post('/api/auth/logout', { refresh_token });

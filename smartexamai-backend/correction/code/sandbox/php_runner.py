@@ -50,20 +50,23 @@ echo $result;
         return "sh /workspace/harness.sh"
 
     def _generate_harness(self, num_tests: int, run_cmd: str) -> str:
-        # FIXED: Uses a POSIX-compliant while loop instead of 'seq'
-        return f"""#!/bin/sh
+    # Les fichiers temporaires vont dans /tmp (seul répertoire inscriptible)
+     return f"""#!/bin/sh
 # --- Execution Step ---
 i=1
 while [ $i -le {num_tests} ]; do
     echo "[TEST_START] $i"
     
-    {run_cmd} < input_$i.txt > actual_$i.txt 2> error_$i.txt
+    {run_cmd} < /workspace/input_$i.txt > /tmp/actual_$i.txt 2> /tmp/error_$i.txt
     EXIT_CODE=$?
     
-    echo "[ACTUAL] $(cat actual_$i.txt)"
-    echo "[STDERR] $(cat error_$i.txt)"
+    echo "[ACTUAL] $(cat /tmp/actual_$i.txt 2>/dev/null || echo '')"
+    echo "[STDERR] $(cat /tmp/error_$i.txt 2>/dev/null || echo '')"
     echo "[EXIT_CODE] $EXIT_CODE"
     echo "[TEST_END]"
+    
+    # Nettoyage
+    rm -f /tmp/actual_$i.txt /tmp/error_$i.txt
     
     i=$((i + 1))
 done
