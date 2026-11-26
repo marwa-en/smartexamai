@@ -1,0 +1,23 @@
+# --- Backend web (FastAPI) ---
+fastapi>=0.110
+uvicorn[standard]>=0.29
+sqlalchemy>=2.0
+python-dotenv>=1.0
+pyjwt>=2.8
+python-multipart>=0.0.9
+pydantic[email]>=2.6
+
+# --- Optionnel : génération de relevé de notes PDF (étudiant) ---
+reportlab>=4.0
+
+# --- Pipeline IA existant (extraction, correction, segmentation) ---
+# Ces dépendances sont utilisées par ai_pipeline/, extraction/, correction/,
+# segmentatio/ et pretraitement/. Elles ne sont nécessaires que si vous
+# déclenchez réellement la correction automatique (POST /api/admin/correction/...).
+# Décommentez / adaptez selon votre environnement (Docker requis pour la
+# correction de code, clé API OpenRouter pour les LLM, modèles OpenCV pour
+# la segmentation).
+# opencv-python
+# numpy
+# docker
+# requests
