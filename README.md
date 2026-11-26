@@ -115,7 +115,6 @@ pytest pentest --runxfail         # voir en détail les constats ouverts
 
 ## 📸 Capture du résultat
 
-![Résultat de la suite de pentest](docs/img/pentest-results.png)
 
 *Exécution réelle sur le laboratoire local (Python 3.12, SQLite jetable). Détails dans le rapport.*
 

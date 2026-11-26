@@ -22,7 +22,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
-__init__
 .env
 test
 # --- Sécurité : ne jamais versionner de données ou secrets ---
@@ -38,3 +37,7 @@ pipeline_work/
 *.key
 __pycache__/
 *.pyc
+
+# Python
+__pycache__/
+*.py[cod]
