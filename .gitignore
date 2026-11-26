@@ -36,3 +36,5 @@ storage_data/
 pipeline_work/
 *.pem
 *.key
+__pycache__/
+*.pyc

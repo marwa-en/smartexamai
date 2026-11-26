@@ -179,7 +179,7 @@ class DockerRunner:
             # --- SÉCURITÉ ---
             network_disabled=True,
             read_only=True,
-            tmpfs={'/tmp': f'size={self.DEFAULT_TMP_SIZE},noexec,nosuid'},
+            tmpfs={'/tmp': f'size={self.DEFAULT_TMP_SIZE},noexec,nosuid'},  # nosec B108 - in-container tmpfs
             cap_drop=['ALL'],
             security_opt=['no-new-privileges'],
             mem_limit=mem_limit,

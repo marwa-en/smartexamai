@@ -7,7 +7,6 @@ et d'effectuer ses actions via les services existants.
 from __future__ import annotations
 
 import getpass
-import os
 import sys
 from datetime import date
 from pathlib import Path
@@ -43,7 +42,7 @@ from service.professeur.professeur_service import ProfesseurService
 # ---------------------------------------------------------------------------
 
 def clear_screen() -> None:
-    os.system("cls" if os.name == "nt" else "clear")
+    print("\033c", end="")
 
 
 def print_header(title: str) -> None:
