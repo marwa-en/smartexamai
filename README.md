@@ -124,9 +124,3 @@ Le dossier `soc/` fournit :
 - `PLAYBOOK_INCIDENT.md` : procédure de réponse à incident (triage → confinement → éradication → retour d'expérience) ;
 - `MITRE_OWASP_MAPPING.md` : correspondance ATT&CK / OWASP Top 10 / OWASP LLM Top 10.
 
-## Avertissement légal
-
-Les tests de ce dépôt sont conçus pour être exécutés **uniquement sur ta propre instance locale de laboratoire**. Ne les dirige jamais vers un système dont tu n'as pas l'autorisation écrite de tester la sécurité.
-
----
-*Projet de fin de stage — IAAI Academy · Spécialité Cybersécurité & Cloud Computing.*
