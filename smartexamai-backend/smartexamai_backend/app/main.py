@@ -15,6 +15,7 @@ from core.exceptions import (
     SmartExamError,
 )
 from db.init_db import init_db
+from app.audit import log_event
 
 from app.routers import auth, classes, copies, correction, etudiant, examens, matieres, professeur, users
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -43,7 +44,7 @@ def validate_security_configuration() -> None:
         return
 
     # En production : validations strictes
-    if settings.jwt_secret in INSECURE_JWT_SECRETS:
+    if settings.jwt_secret in INSECURE_JWT_SECRETS or len(settings.jwt_secret) < 32:
         raise RuntimeError(
             "🔒 Sécurité : SMARTEXAM_JWT_SECRET doit être défini avec une valeur forte "
             "en production. Utilisez un secret aléatoire d'au moins 32 caractères."
@@ -88,6 +89,11 @@ class AdvancedSecurityHeadersMiddleware(BaseHTTPMiddleware):
                 "default-src 'none'; frame-ancestors 'none'; base-uri 'none'"
             )
 
+        # --- Pas de mise en cache des réponses d'API (jetons, notes, données personnelles) ---
+        if path.startswith("/api/"):
+            response.headers["Cache-Control"] = "no-store"
+            response.headers["Pragma"] = "no-cache"
+
         # --- Confidentialité ---
         response.headers["Referrer-Policy"] = "no-referrer"
         response.headers["Permissions-Policy"] = (
@@ -105,6 +111,17 @@ class AdvancedSecurityHeadersMiddleware(BaseHTTPMiddleware):
                 "max-age=63072000; includeSubDomains; preload"
             )
 
+        return response
+
+
+class AuditAccessMiddleware(BaseHTTPMiddleware):
+    """Journalise les refus d'accès (401/403) : signal de base pour la détection SOC."""
+
+    async def dispatch(self, request, call_next):
+        response = await call_next(request)
+        if response.status_code in (401, 403) and not request.url.path.endswith("/login"):
+            log_event("security.access_denied", status=response.status_code, method=request.method,
+                      path=request.url.path, ip=request.client.host if request.client else None)
         return response
 
 
@@ -127,6 +144,8 @@ class CSRFProtectionMiddleware(BaseHTTPMiddleware):
             if origin:
                 allowed = settings.get_cors_origins_list()
                 if origin not in allowed:
+                    log_event("security.csrf_blocked", origin=origin, path=request.url.path,
+                              ip=request.client.host if request.client else None)
                     return JSONResponse(
                         status_code=403,
                         content={"detail": "Origine non autorisée (protection CSRF)."},
@@ -134,7 +153,11 @@ class CSRFProtectionMiddleware(BaseHTTPMiddleware):
 
         return await call_next(request)
     
+_IS_PROD = settings.is_production()
 app = FastAPI(
+    docs_url=None if _IS_PROD else "/docs",
+    redoc_url=None if _IS_PROD else "/redoc",
+    openapi_url=None if _IS_PROD else "/openapi.json",
     title="SmartExamAI API",
     description="API FastAPI pour la plateforme SmartExamAI (correction automatique de copies d'examen).",
      lifespan=lifespan,
@@ -143,7 +166,8 @@ app = FastAPI(
 # --- CORS : autorise le frontend React (Vite en dev, build statique en prod) ---
 _default_origins = "http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000"
 _allowed_origins = os.environ.get("SMARTEXAM_CORS_ORIGINS", _default_origins).split(",")
-app.add_middleware(CSRFProtectionMiddleware)           # le plus interne
+app.add_middleware(AuditAccessMiddleware)
+app.add_middleware(CSRFProtectionMiddleware)
 app.add_middleware(AdvancedSecurityHeadersMiddleware)            # le plus externe (déjà présent)
 app.add_middleware(
     CORSMiddleware,

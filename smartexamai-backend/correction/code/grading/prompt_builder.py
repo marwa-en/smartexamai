@@ -40,6 +40,11 @@ def build_grading_prompt(
     while marker in student_code:
         marker = secrets.token_hex(8)
 
+    # ✅ F-05 : neutraliser toute balise <student_code> forgée par le candidat (break-out)
+    import re as _re
+    student_code = _re.sub(r"<\s*(/?)\s*student_code", lambda m: "&lt;" + m.group(1) + "student_code",
+                           student_code, flags=_re.IGNORECASE)
+
     # Construire le prompt avec séparation claire instructions / données
     prompt = f"""{SECURITY_SYSTEM_PROMPT}
 

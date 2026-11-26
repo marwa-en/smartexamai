@@ -1,0 +1,19 @@
+title: SmartExamAI - Rafale de refus d'accès (énumération d'IDs / IDOR)
+id: 7a1c2e10-5b0d-4f7e-9a11-000000000005
+status: experimental
+description: Un utilisateur authentifié multiplie les 401/403 (balayage de ressources).
+tags: [attack.discovery, attack.t1087]
+logsource: {product: smartexamai, service: audit}
+detection:
+  selection: {event: security.access_denied}
+  condition: selection
+level: low
+---
+title: SmartExamAI - Balayage IDOR (corrélation)
+correlation:
+  type: event_count
+  rules: [7a1c2e10-5b0d-4f7e-9a11-000000000005]
+  group-by: [ip]
+  timespan: 5m
+  condition: {gte: 15}
+level: high

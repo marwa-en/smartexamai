@@ -1,0 +1,10 @@
+title: SmartExamAI - Rejeu de refresh token / jeton périmé
+id: 7a1c2e10-5b0d-4f7e-9a11-000000000004
+status: experimental
+description: Refresh token rejeté (rejeu = vol probable) ou jeton d'accès devenu obsolète après changement de mot de passe.
+tags: [attack.credential_access, attack.t1550]
+logsource: {product: smartexamai, service: audit}
+detection:
+  selection: {event: [auth.refresh_rejected, auth.stale_token]}
+  condition: selection
+level: high

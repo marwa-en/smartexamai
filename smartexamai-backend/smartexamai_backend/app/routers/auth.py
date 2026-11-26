@@ -12,7 +12,8 @@ from pydantic import BaseModel, Field
 
 from app.deps import get_current_user, get_db
 from app.schemas import LoginRequest, TokenResponse, UserOut
-from app.security_jwt import create_access_token
+from app.security_jwt import create_access_token, password_fingerprint
+from app.audit import log_event
 from app.rate_limit import login_limiter
 from modelss.user import User
 from repositories.user_repository import UserRepository
@@ -112,6 +113,7 @@ def login(
     rate_limit_key = f"login:{client_ip}"
 
     if not login_limiter.is_allowed(rate_limit_key):
+        log_event("auth.rate_limited", username=payload.username, ip=client_ip)
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail="Trop de tentatives de connexion. Réessayez dans quelques minutes.",
@@ -122,6 +124,7 @@ def login(
 
     if user is None:
         # Ne pas révéler si le username existe ou non
+        log_event("auth.login_failed", username=payload.username, ip=client_ip, reason="unknown_user")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Nom d'utilisateur ou mot de passe incorrect.",
@@ -129,14 +132,17 @@ def login(
 
     # 3. Vérifier si le compte est verrouillé
     if _is_locked(user):
+        # ✅ F-02 : même réponse qu'un identifiant inconnu (pas d'énumération de comptes)
+        log_event("auth.login_blocked_locked", username=payload.username, ip=client_ip)
         raise HTTPException(
-            status_code=status.HTTP_423_LOCKED,
-            detail=f"Compte temporairement verrouillé. Réessayez dans {LOCKOUT_DURATION_MINUTES} minutes.",
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Nom d'utilisateur ou mot de passe incorrect.",
         )
 
     # 4. Vérifier le mot de passe
     if not verify_password(payload.password, user.password_hash):
         _register_failed_login(db, user)
+        log_event("auth.login_failed", username=payload.username, ip=client_ip, reason="bad_password")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Nom d'utilisateur ou mot de passe incorrect.",
@@ -151,10 +157,11 @@ def login(
 
     # 6. Succès : réinitialiser les compteurs
     _register_successful_login(db, user)
+    log_event("auth.login_success", level=20, username=user.username, user_id=user.id, ip=client_ip)
     login_limiter.reset(rate_limit_key)
 
     # 7. Générer le token
-    token = create_access_token(user_id=user.id, username=user.username, role=user.role)
+    token = create_access_token(user_id=user.id, username=user.username, role=user.role, pwv=password_fingerprint(user.password_hash))
 
     # ✅ Émettre un refresh token (nouvelle famille de session)
     refresh = create_refresh_token(
@@ -235,12 +242,13 @@ def refresh_tokens(
             ip=request.client.host if request.client else None,
         )
     except ValueError as exc:
+        log_event("auth.refresh_rejected", ip=request.client.host if request.client else None, reason=str(exc))
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=str(exc),
         )
 
-    token = create_access_token(user_id=user.id, username=user.username, role=user.role)
+    token = create_access_token(user_id=user.id, username=user.username, role=user.role, pwv=password_fingerprint(user.password_hash))
 
     return TokenResponse(
         access_token=token,

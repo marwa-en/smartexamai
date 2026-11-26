@@ -51,28 +51,31 @@ def _validate_image_extension(filename: str) -> str:
     return ext
 
 
-def _is_valid_image(content: bytes) -> bool:
-    """Vérifie si le contenu correspond à une image valide via magic bytes."""
-    if len(content) < 4:
-        return False
+_EXT_KIND = {".png": "png", ".jpg": "jpeg", ".jpeg": "jpeg", ".tiff": "tiff", ".bmp": "bmp", ".pdf": "pdf"}
+_BMP_DIB_SIZES = {12, 40, 52, 56, 64, 108, 124}
 
-    # PNG
+
+def _sniff_kind(content: bytes) -> str | None:
+    """Détecte le vrai type du fichier par sa signature binaire (et non par son extension)."""
     if content[:8] == b"\x89PNG\r\n\x1a\n":
-        return True
-    # JPEG
-    if content[:2] == b"\xff\xd8":
-        return True
-    # TIFF
-    if content[:4] == b"II\x2a\x00" or content[:4] == b"MM\x00\x2a":
-        return True
-    # BMP
-    if content[:2] == b"BM":
-        return True
-    # PDF
-    if content[:4] == b"%PDF":
-        return True
+        return "png"
+    if content[:3] == b"\xff\xd8\xff":
+        return "jpeg"
+    if content[:4] in (b"II\x2a\x00", b"MM\x00\x2a"):
+        return "tiff"
+    if content[:2] == b"BM" and len(content) >= 18 and int.from_bytes(content[14:18], "little") in _BMP_DIB_SIZES:
+        return "bmp"
+    if content[:5] == b"%PDF-":
+        return "pdf"
+    return None
 
-    return False
+
+def _is_valid_image(content: bytes, ext: str | None = None) -> bool:
+    """Valide le contenu réel ET sa cohérence avec l'extension déclarée (F-04)."""
+    kind = _sniff_kind(content)
+    if kind is None:
+        return False
+    return ext is None or _EXT_KIND.get(ext.lower()) == kind
 
 
 # ============================================================================
@@ -133,7 +136,7 @@ async def deposer_copie(
                 )
 
             # ✅ 6. Vérifier que c'est bien une image (magic bytes)
-            if not _is_valid_image(content):
+            if not _is_valid_image(content, ext):
                 raise HTTPException(
                     status_code=415,
                     detail=f"Le fichier '{upload.filename}' n'est pas une image valide.",

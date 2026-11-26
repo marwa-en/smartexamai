@@ -1,0 +1,12 @@
+title: SmartExamAI - Prompt injection détectée dans une copie
+id: 7a1c2e10-5b0d-4f7e-9a11-000000000006
+status: experimental
+description: Le garde LLM a signalé des motifs d'injection (note à revoir manuellement).
+references: [https://genai.owasp.org/llmrisk/llm01-prompt-injection/]
+tags: [attack.impact, attack.t1565, owasp.llm01]
+logsource: {product: smartexamai, service: application}
+detection:
+  selection: {message|contains: 'injection_flags='}
+  filter_clean: {message|contains: 'injection_flags=none'}
+  condition: selection and not filter_clean
+level: medium

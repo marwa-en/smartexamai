@@ -289,14 +289,20 @@ def log_llm_call(
 logger = logging.getLogger("smartexamai.parser")
 
 
-def parse_grading_response(response: dict) -> GradingResult:
+def parse_grading_response(response: dict, trusted_max_score: float = 20.0) -> GradingResult:
     """Parse et valide la réponse de notation avec clamp du score."""
     try:
         result = GradingResult(**response)
 
         # Récupérer le score brut
         raw_score = result.score
-        max_score = result.max_score
+        # ✅ F-03 : le plafond vient du barème de l'examen (paramètre de confiance),
+        # JAMAIS de la valeur « max_score » renvoyée par le LLM (potentiellement manipulée).
+        max_score = trusted_max_score
+        if result.max_score != trusted_max_score:
+            logger.warning("max_score LLM (%s) ≠ barème de confiance (%s) : barème imposé",
+                           result.max_score, trusted_max_score)
+            result.max_score = int(trusted_max_score)
 
         # Clamper le score (ne jamais faire confiance au LLM)
         clamped_score = clamp_score(raw_score, max_score)

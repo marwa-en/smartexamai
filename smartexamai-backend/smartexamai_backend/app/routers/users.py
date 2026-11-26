@@ -9,6 +9,7 @@ from app.deps import get_db, require_admin
 from app.schemas import UserCreate, UserOut, UserUpdate
 from core.exceptions import DuplicateEntityError, UserNotFoundError
 from modelss.enums import RoleUtilisateur
+from modelss.user import User
 from service.admin.user_management_service import UserManagementService
 import re
 
@@ -42,6 +43,11 @@ def create_user(payload: UserCreate, db: Session = Depends(get_db)):
     errors = validate_password_strength(payload.password)
     if errors:
         raise HTTPException(status_code=400, detail=" ".join(errors))
+
+    # ✅ F-13 : unicité insensible à la casse (pas de comptes sosies « Admin » / « admin »)
+    from sqlalchemy import func
+    if db.query(User).filter(func.lower(User.username) == payload.username.lower()).first():
+        raise HTTPException(status_code=409, detail="Ce nom d'utilisateur existe déjà.")
 
     try:
         user = UserManagementService(db).create_user(

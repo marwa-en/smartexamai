@@ -25,3 +25,14 @@ dist-ssr
 __init__
 .env
 test
+# --- Sécurité : ne jamais versionner de données ou secrets ---
+*.db
+*.sqlite
+*.sqlite3
+.env
+.env.*
+!.env.example
+storage_data/
+pipeline_work/
+*.pem
+*.key

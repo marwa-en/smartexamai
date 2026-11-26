@@ -1,0 +1,19 @@
+title: SmartExamAI - Tentatives CSRF bloquées
+id: 7a1c2e10-5b0d-4f7e-9a11-000000000003
+status: experimental
+description: Requêtes mutantes avec une Origin non autorisée (site tiers malveillant ou XSS).
+tags: [attack.initial_access, attack.t1189]
+logsource: {product: smartexamai, service: audit}
+detection:
+  selection: {event: security.csrf_blocked}
+  condition: selection
+level: medium
+---
+title: SmartExamAI - Rafale CSRF (corrélation)
+correlation:
+  type: event_count
+  rules: [7a1c2e10-5b0d-4f7e-9a11-000000000003]
+  group-by: [ip]
+  timespan: 5m
+  condition: {gte: 3}
+level: high

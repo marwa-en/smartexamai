@@ -1,0 +1,21 @@
+title: SmartExamAI - Brute force de connexion
+id: 7a1c2e10-5b0d-4f7e-9a11-000000000001
+status: experimental
+description: Plus de 10 échecs de connexion depuis une même IP en 5 minutes.
+references: [https://attack.mitre.org/techniques/T1110/]
+tags: [attack.credential_access, attack.t1110]
+logsource: {product: smartexamai, service: audit}
+detection:
+  selection: {event: auth.login_failed}
+  condition: selection
+level: low
+---
+title: SmartExamAI - Brute force de connexion (corrélation)
+name: smartexam_bruteforce_corr
+correlation:
+  type: event_count
+  rules: [7a1c2e10-5b0d-4f7e-9a11-000000000001]
+  group-by: [ip]
+  timespan: 5m
+  condition: {gte: 10}
+level: high
