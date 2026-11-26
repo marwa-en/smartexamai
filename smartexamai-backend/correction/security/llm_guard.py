@@ -46,17 +46,63 @@ INJECTION_PATTERNS = [
     r"perfect\s+score",
     r"full\s+marks?",
     r"give\s+(me\s+)?(a\s+)?(20|100|perfect|full)",
+    # Synonymes / reformulations (F-06)
+    r"(override|bypass|supersede|replace|cancel)\s+(the\s+)?(earlier|prior|previous|above|system)\s+(guidance|instructions?|rules|prompt)",
+    r"mark\s+(this|the)\s+(answer|response|code|copy)\s+as\s+(flawless|perfect|correct|full|excellent)",
+    r"print\s+your\s+system\s+prompt",
+    r"^\s*#{2,}\s*(system|assistant|developer)\b",
+    r"^\s*(system|assistant|developer)\s*:",
+    # Espagnol
+    r"ignora\s+(todas?\s+)?(las?\s+)?instrucciones\s+(anteriores|previas)",
+    r"olvida\s+(todas?\s+)?(las?\s+)?instrucciones",
+    r"(pon|da|asigna)\s+(la\s+)?(nota|puntuaci[oó]n)\s+(m[aá]xima|20|100)",
+    # Arabe
+    r"تجاهل\s+(جميع\s+|كل\s+)?التعليمات",
+    r"(الدرجة|العلامة)\s+الكاملة",
 ]
 
 # Compiler les patterns une seule fois
 _COMPILED_PATTERNS = [re.compile(p, re.IGNORECASE | re.MULTILINE) for p in INJECTION_PATTERNS]
 
 
-def detect_prompt_injection(text: str) -> list[str]:
+_HOMOGLYPHS = str.maketrans({
+    "а": "a", "е": "e", "о": "o", "р": "p", "с": "c", "у": "y", "х": "x", "і": "i", "ј": "j", "ѕ": "s",
+    "ո": "n", "ν": "v", "ο": "o", "α": "a", "ε": "e", "ι": "i", "κ": "k", "ρ": "p", "τ": "t", "υ": "u",
+})
+_LEET = str.maketrans({"0": "o", "1": "i", "3": "e", "4": "a", "5": "s", "7": "t", "@": "a", "$": "s"})
+_B64_RE = re.compile(r"[A-Za-z0-9+/]{20,}={0,2}")
+
+
+def normalize_for_detection(text: str) -> str:
+    """Neutralise les astuces d'évasion : Unicode (NFKC), caractères invisibles, homoglyphes,
+    lettres espacées (« i g n o r e »)."""
+    import unicodedata
+    t = unicodedata.normalize("NFKC", text)
+    t = "".join(ch for ch in t if unicodedata.category(ch) != "Cf")      # zero-width, bidi, etc.
+    t = t.translate(_HOMOGLYPHS).lower()
+    # « i g n o r e   a l l » -> « ignore all » (séquences de ≥4 lettres isolées)
+    # (≥ 2 espaces = frontière de mot ; un seul espace entre lettres isolées = lettres d'un même mot)
+    segments = re.split(r"\s{2,}", t)
+    segments = [re.sub(r"(?<!\S)((?:\w ){2,}\w)(?!\S)", lambda m: m.group(1).replace(" ", ""), seg) for seg in segments]
+    return " ".join(segments)
+
+
+def _decoded_base64_segments(text: str) -> list[str]:
+    import base64, binascii
+    out = []
+    for seg in _B64_RE.findall(text)[:20]:
+        try:
+            out.append(base64.b64decode(seg + "=" * (-len(seg) % 4), validate=True).decode("utf-8", "ignore"))
+        except (binascii.Error, ValueError):
+            continue
+    return out
+
+
+def detect_prompt_injection(text: str, _depth: int = 0) -> list[str]:
     """Détecte des tentatives de prompt injection dans un texte.
 
-    Args:
-        text: Texte à analyser (généralement du contenu extrait d'une copie).
+    Défense en profondeur : cette heuristique ne remplace PAS l'isolation du prompt,
+    le bornage du score ni la revue humaine (les attaques par reformulation restent possibles).
 
     Returns:
         Liste des patterns suspects détectés (vide si aucun).
@@ -64,10 +110,17 @@ def detect_prompt_injection(text: str) -> list[str]:
     if not text:
         return []
 
-    matches = []
-    for pattern in _COMPILED_PATTERNS:
-        if pattern.search(text):
-            matches.append(pattern.pattern)
+    variants = {text, normalize_for_detection(text)}
+    variants.add(normalize_for_detection(text).translate(_LEET))
+    matches: list[str] = []
+    for v in variants:
+        for pattern in _COMPILED_PATTERNS:
+            if pattern.pattern not in matches and pattern.search(v):
+                matches.append(pattern.pattern)
+
+    if _depth == 0 and not matches:        # charges utiles encodées en base64
+        for decoded in _decoded_base64_segments(text):
+            matches += [f"base64:{m}" for m in detect_prompt_injection(decoded, _depth=1)]
 
     if matches:
         logger.warning(
@@ -77,10 +130,6 @@ def detect_prompt_injection(text: str) -> list[str]:
 
     return matches
 
-
-# ============================================================================
-# Sanitisation du texte
-# ============================================================================
 
 def sanitize_llm_text(text: str, max_length: int = 50_000) -> str:
     """Nettoie un texte issu d'un LLM pour stockage/affichage.

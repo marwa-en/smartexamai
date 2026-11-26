@@ -23,12 +23,19 @@ class InvalidTokenError(Exception):
     pass
 
 
-def create_access_token(*, user_id: int, username: str, role: str) -> str:
+def password_fingerprint(password_hash: str) -> str:
+    """Empreinte courte du hash courant : change dès que le mot de passe change (révocation des jetons)."""
+    import hashlib
+    return hashlib.sha256(password_hash.encode()).hexdigest()[:16]
+
+
+def create_access_token(*, user_id: int, username: str, role: str, pwv: str = "") -> str:
     now = datetime.now(timezone.utc)
     payload: Dict[str, Any] = {
         "sub": str(user_id),
         "username": username,
         "role": role,
+        "pwv": pwv,
         "iat": now,
         "exp": now + timedelta(minutes=JWT_EXPIRE_MINUTES),
     }

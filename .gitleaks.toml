@@ -1,0 +1,6 @@
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Pentest test payloads"
+paths = ['''pentest/tests/.*''']

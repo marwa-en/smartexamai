@@ -1,0 +1,48 @@
+name: security
+on:
+  push: {branches: [main]}
+  pull_request:
+  schedule: [{cron: "0 6 * * 1"}]   # chaque lundi
+
+permissions: {contents: read, pull-requests: write}
+
+jobs:
+  pentest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12", cache: pip}
+      - run: pip install -r pentest/requirements-pentest.txt
+      - run: pytest pentest -v --html=pentest-report.html --self-contained-html
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: {name: pentest-report, path: pentest-report.html}
+
+  sast:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: pip install bandit
+      - run: bandit -r smartexamai-backend -ll -x "*/pentest/*"
+
+  dependencies:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: pip install pip-audit && pip-audit -r smartexamai-backend/smartexamai_backend/requirements.txt
+      - uses: actions/setup-node@v4
+        with: {node-version: 20}
+      - run: cd smartexamai-frontend && npm audit --omit=dev --audit-level=high
+
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - uses: gitleaks/gitleaks-action@v2
+        env: {GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"}

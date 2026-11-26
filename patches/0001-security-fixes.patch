@@ -1,0 +1,555 @@
+diff --git a/.gitignore b/.gitignore
+index 58c19f6..f17724c 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -24,4 +24,15 @@ dist-ssr
+ *.sw?
+ __init__
+ .env
+-test
+\ No newline at end of file
++test
++# --- Sécurité : ne jamais versionner de données ou secrets ---
++*.db
++*.sqlite
++*.sqlite3
++.env
++.env.*
++!.env.example
++storage_data/
++pipeline_work/
++*.pem
++*.key
+diff --git a/smartexamai-backend/correction/code/grading/parser.py b/smartexamai-backend/correction/code/grading/parser.py
+index 64d7322..7ca1635 100644
+--- a/smartexamai-backend/correction/code/grading/parser.py
++++ b/smartexamai-backend/correction/code/grading/parser.py
+@@ -289,14 +289,20 @@ def log_llm_call(
+ logger = logging.getLogger("smartexamai.parser")
+ 
+ 
+-def parse_grading_response(response: dict) -> GradingResult:
++def parse_grading_response(response: dict, trusted_max_score: float = 20.0) -> GradingResult:
+     """Parse et valide la réponse de notation avec clamp du score."""
+     try:
+         result = GradingResult(**response)
+ 
+         # Récupérer le score brut
+         raw_score = result.score
+-        max_score = result.max_score
++        # ✅ F-03 : le plafond vient du barème de l'examen (paramètre de confiance),
++        # JAMAIS de la valeur « max_score » renvoyée par le LLM (potentiellement manipulée).
++        max_score = trusted_max_score
++        if result.max_score != trusted_max_score:
++            logger.warning("max_score LLM (%s) ≠ barème de confiance (%s) : barème imposé",
++                           result.max_score, trusted_max_score)
++            result.max_score = int(trusted_max_score)
+ 
+         # Clamper le score (ne jamais faire confiance au LLM)
+         clamped_score = clamp_score(raw_score, max_score)
+diff --git a/smartexamai-backend/correction/code/grading/prompt_builder.py b/smartexamai-backend/correction/code/grading/prompt_builder.py
+index 47c39a2..e1f86b6 100644
+--- a/smartexamai-backend/correction/code/grading/prompt_builder.py
++++ b/smartexamai-backend/correction/code/grading/prompt_builder.py
+@@ -40,6 +40,11 @@ def build_grading_prompt(
+     while marker in student_code:
+         marker = secrets.token_hex(8)
+ 
++    # ✅ F-05 : neutraliser toute balise <student_code> forgée par le candidat (break-out)
++    import re as _re
++    student_code = _re.sub(r"<\s*(/?)\s*student_code", lambda m: "&lt;" + m.group(1) + "student_code",
++                           student_code, flags=_re.IGNORECASE)
++
+     # Construire le prompt avec séparation claire instructions / données
+     prompt = f"""{SECURITY_SYSTEM_PROMPT}
+ 
+diff --git a/smartexamai-backend/correction/security/llm_guard.py b/smartexamai-backend/correction/security/llm_guard.py
+index 557dae3..afcce35 100644
+--- a/smartexamai-backend/correction/security/llm_guard.py
++++ b/smartexamai-backend/correction/security/llm_guard.py
+@@ -46,17 +46,63 @@ INJECTION_PATTERNS = [
+     r"perfect\s+score",
+     r"full\s+marks?",
+     r"give\s+(me\s+)?(a\s+)?(20|100|perfect|full)",
++    # Synonymes / reformulations (F-06)
++    r"(override|bypass|supersede|replace|cancel)\s+(the\s+)?(earlier|prior|previous|above|system)\s+(guidance|instructions?|rules|prompt)",
++    r"mark\s+(this|the)\s+(answer|response|code|copy)\s+as\s+(flawless|perfect|correct|full|excellent)",
++    r"print\s+your\s+system\s+prompt",
++    r"^\s*#{2,}\s*(system|assistant|developer)\b",
++    r"^\s*(system|assistant|developer)\s*:",
++    # Espagnol
++    r"ignora\s+(todas?\s+)?(las?\s+)?instrucciones\s+(anteriores|previas)",
++    r"olvida\s+(todas?\s+)?(las?\s+)?instrucciones",
++    r"(pon|da|asigna)\s+(la\s+)?(nota|puntuaci[oó]n)\s+(m[aá]xima|20|100)",
++    # Arabe
++    r"تجاهل\s+(جميع\s+|كل\s+)?التعليمات",
++    r"(الدرجة|العلامة)\s+الكاملة",
+ ]
+ 
+ # Compiler les patterns une seule fois
+ _COMPILED_PATTERNS = [re.compile(p, re.IGNORECASE | re.MULTILINE) for p in INJECTION_PATTERNS]
+ 
+ 
+-def detect_prompt_injection(text: str) -> list[str]:
++_HOMOGLYPHS = str.maketrans({
++    "а": "a", "е": "e", "о": "o", "р": "p", "с": "c", "у": "y", "х": "x", "і": "i", "ј": "j", "ѕ": "s",
++    "ո": "n", "ν": "v", "ο": "o", "α": "a", "ε": "e", "ι": "i", "κ": "k", "ρ": "p", "τ": "t", "υ": "u",
++})
++_LEET = str.maketrans({"0": "o", "1": "i", "3": "e", "4": "a", "5": "s", "7": "t", "@": "a", "$": "s"})
++_B64_RE = re.compile(r"[A-Za-z0-9+/]{20,}={0,2}")
++
++
++def normalize_for_detection(text: str) -> str:
++    """Neutralise les astuces d'évasion : Unicode (NFKC), caractères invisibles, homoglyphes,
++    lettres espacées (« i g n o r e »)."""
++    import unicodedata
++    t = unicodedata.normalize("NFKC", text)
++    t = "".join(ch for ch in t if unicodedata.category(ch) != "Cf")      # zero-width, bidi, etc.
++    t = t.translate(_HOMOGLYPHS).lower()
++    # « i g n o r e   a l l » -> « ignore all » (séquences de ≥4 lettres isolées)
++    # (≥ 2 espaces = frontière de mot ; un seul espace entre lettres isolées = lettres d'un même mot)
++    segments = re.split(r"\s{2,}", t)
++    segments = [re.sub(r"(?<!\S)((?:\w ){2,}\w)(?!\S)", lambda m: m.group(1).replace(" ", ""), seg) for seg in segments]
++    return " ".join(segments)
++
++
++def _decoded_base64_segments(text: str) -> list[str]:
++    import base64, binascii
++    out = []
++    for seg in _B64_RE.findall(text)[:20]:
++        try:
++            out.append(base64.b64decode(seg + "=" * (-len(seg) % 4), validate=True).decode("utf-8", "ignore"))
++        except (binascii.Error, ValueError):
++            continue
++    return out
++
++
++def detect_prompt_injection(text: str, _depth: int = 0) -> list[str]:
+     """Détecte des tentatives de prompt injection dans un texte.
+ 
+-    Args:
+-        text: Texte à analyser (généralement du contenu extrait d'une copie).
++    Défense en profondeur : cette heuristique ne remplace PAS l'isolation du prompt,
++    le bornage du score ni la revue humaine (les attaques par reformulation restent possibles).
+ 
+     Returns:
+         Liste des patterns suspects détectés (vide si aucun).
+@@ -64,10 +110,17 @@ def detect_prompt_injection(text: str) -> list[str]:
+     if not text:
+         return []
+ 
+-    matches = []
+-    for pattern in _COMPILED_PATTERNS:
+-        if pattern.search(text):
+-            matches.append(pattern.pattern)
++    variants = {text, normalize_for_detection(text)}
++    variants.add(normalize_for_detection(text).translate(_LEET))
++    matches: list[str] = []
++    for v in variants:
++        for pattern in _COMPILED_PATTERNS:
++            if pattern.pattern not in matches and pattern.search(v):
++                matches.append(pattern.pattern)
++
++    if _depth == 0 and not matches:        # charges utiles encodées en base64
++        for decoded in _decoded_base64_segments(text):
++            matches += [f"base64:{m}" for m in detect_prompt_injection(decoded, _depth=1)]
+ 
+     if matches:
+         logger.warning(
+@@ -78,10 +131,6 @@ def detect_prompt_injection(text: str) -> list[str]:
+     return matches
+ 
+ 
+-# ============================================================================
+-# Sanitisation du texte
+-# ============================================================================
+-
+ def sanitize_llm_text(text: str, max_length: int = 50_000) -> str:
+     """Nettoie un texte issu d'un LLM pour stockage/affichage.
+ 
+diff --git a/smartexamai-backend/smartexamai_backend/.env.example b/smartexamai-backend/smartexamai_backend/.env.example
+index e49d2c9..3dc3a2f 100644
+--- a/smartexamai-backend/smartexamai_backend/.env.example
++++ b/smartexamai-backend/smartexamai_backend/.env.example
+@@ -25,7 +25,7 @@ SMARTEXAM_CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
+ DOCKER_IMAGE_PYTHON=python:3.11-slim
+ DOCKER_IMAGE_PHP=php:8.2-cli
+ DOCKER_IMAGE_JAVA=openjdk:17-slim
+-DOCKER_IMAGE_C=gcc:latest
++DOCKER_IMAGE_C=gcc:13
+ DOCKER_TIMEOUT=10
+ DOCKER_MEMORY_LIMIT=256m
+ DOCKER_MAX_OUTPUT_SIZE=1048576
+diff --git a/smartexamai-backend/smartexamai_backend/app/audit.py b/smartexamai-backend/smartexamai_backend/app/audit.py
+new file mode 100644
+index 0000000..96110b7
+--- /dev/null
++++ b/smartexamai-backend/smartexamai_backend/app/audit.py
+@@ -0,0 +1,24 @@
++"""
++SmartExamAI — Journal d'audit de sécurité (SIEM-ready).
++
++Émet des événements JSON (une ligne = un événement) sur le logger « smartexamai.audit ».
++Format stable pour être ingéré tel quel par Wazuh / Elastic / Splunk / Loki.
++Les mots de passe et jetons ne sont JAMAIS journalisés.
++"""
++from __future__ import annotations
++
++import json
++import logging
++from datetime import datetime, timezone
++
++logger = logging.getLogger("smartexamai.audit")
++
++# Champs qu'on refuse catégoriquement d'écrire dans les logs
++_FORBIDDEN = {"password", "token", "access_token", "refresh_token", "authorization", "secret"}
++
++
++def log_event(event: str, *, level: int = logging.WARNING, **fields) -> None:
++    """Ex. log_event("auth.login_failed", username="x", ip="1.2.3.4")."""
++    safe = {k: v for k, v in fields.items() if k.lower() not in _FORBIDDEN}
++    payload = {"ts": datetime.now(timezone.utc).isoformat(), "event": event, **safe}
++    logger.log(level, json.dumps(payload, ensure_ascii=False, default=str))
+diff --git a/smartexamai-backend/smartexamai_backend/app/deps.py b/smartexamai-backend/smartexamai_backend/app/deps.py
+index 2db4df4..3f2040f 100644
+--- a/smartexamai-backend/smartexamai_backend/app/deps.py
++++ b/smartexamai-backend/smartexamai_backend/app/deps.py
+@@ -11,11 +11,12 @@ from __future__ import annotations
+ 
+ from typing import Iterator
+ 
+-from fastapi import Depends, HTTPException, status
++from fastapi import Depends, HTTPException, Request, status
+ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+ from sqlalchemy.orm import Session
+ 
+-from app.security_jwt import InvalidTokenError, decode_access_token
++from app.security_jwt import InvalidTokenError, decode_access_token, password_fingerprint
++from app.audit import log_event
+ from db.session import SessionLocal
+ from modelss.enums import RoleUtilisateur
+ from modelss.user import User
+@@ -36,7 +37,12 @@ def get_db() -> Iterator[Session]:
+         db.close()
+ 
+ 
++# Routes accessibles même quand le changement de mot de passe est obligatoire
++_PWD_CHANGE_ALLOWED = ("/api/auth/change-password", "/api/auth/me", "/api/auth/logout")
++
++
+ def get_current_user(
++    request: Request,
+     credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+     db: Session = Depends(get_db),
+ ) -> User:
+@@ -55,13 +61,35 @@ def get_current_user(
+             headers={"WWW-Authenticate": "Bearer"},
+         )
+ 
+-    user_id = int(payload["sub"])
++    # ✅ F-01 : un jeton signé mais mal formé ne doit jamais provoquer un HTTP 500
++    try:
++        user_id = int(payload["sub"])
++    except (KeyError, TypeError, ValueError):
++        raise HTTPException(
++            status_code=status.HTTP_401_UNAUTHORIZED,
++            detail="Token invalide ou expiré.",
++            headers={"WWW-Authenticate": "Bearer"},
++        )
+     user = UserRepository(db).get(user_id)
+     if user is None or not user.is_active:
+         raise HTTPException(
+             status_code=status.HTTP_401_UNAUTHORIZED,
+             detail="Compte introuvable ou désactivé.",
+         )
++    # ✅ F-11 : le jeton doit correspondre au mot de passe ACTUEL (changement = révocation)
++    if payload.get("pwv") != password_fingerprint(user.password_hash):
++        log_event("auth.stale_token", user_id=user.id, ip=request.client.host if request.client else None)
++        raise HTTPException(
++            status_code=status.HTTP_401_UNAUTHORIZED,
++            detail="Token invalide ou expiré.",
++            headers={"WWW-Authenticate": "Bearer"},
++        )
++    # ✅ F-12 : changement de mot de passe obligatoire avant toute autre action
++    if getattr(user, "must_change_password", False) and request.url.path not in _PWD_CHANGE_ALLOWED:
++        raise HTTPException(
++            status_code=status.HTTP_403_FORBIDDEN,
++            detail="Changement de mot de passe obligatoire avant de continuer.",
++        )
+     return user
+ 
+ 
+diff --git a/smartexamai-backend/smartexamai_backend/app/main.py b/smartexamai-backend/smartexamai_backend/app/main.py
+index 35b37c1..3b66df4 100644
+--- a/smartexamai-backend/smartexamai_backend/app/main.py
++++ b/smartexamai-backend/smartexamai_backend/app/main.py
+@@ -15,6 +15,7 @@ from core.exceptions import (
+     SmartExamError,
+ )
+ from db.init_db import init_db
++from app.audit import log_event
+ 
+ from app.routers import auth, classes, copies, correction, etudiant, examens, matieres, professeur, users
+ from starlette.middleware.base import BaseHTTPMiddleware
+@@ -43,7 +44,7 @@ def validate_security_configuration() -> None:
+         return
+ 
+     # En production : validations strictes
+-    if settings.jwt_secret in INSECURE_JWT_SECRETS:
++    if settings.jwt_secret in INSECURE_JWT_SECRETS or len(settings.jwt_secret) < 32:
+         raise RuntimeError(
+             "🔒 Sécurité : SMARTEXAM_JWT_SECRET doit être défini avec une valeur forte "
+             "en production. Utilisez un secret aléatoire d'au moins 32 caractères."
+@@ -88,6 +89,11 @@ class AdvancedSecurityHeadersMiddleware(BaseHTTPMiddleware):
+                 "default-src 'none'; frame-ancestors 'none'; base-uri 'none'"
+             )
+ 
++        # --- Pas de mise en cache des réponses d'API (jetons, notes, données personnelles) ---
++        if path.startswith("/api/"):
++            response.headers["Cache-Control"] = "no-store"
++            response.headers["Pragma"] = "no-cache"
++
+         # --- Confidentialité ---
+         response.headers["Referrer-Policy"] = "no-referrer"
+         response.headers["Permissions-Policy"] = (
+@@ -108,6 +114,17 @@ class AdvancedSecurityHeadersMiddleware(BaseHTTPMiddleware):
+         return response
+ 
+ 
++class AuditAccessMiddleware(BaseHTTPMiddleware):
++    """Journalise les refus d'accès (401/403) : signal de base pour la détection SOC."""
++
++    async def dispatch(self, request, call_next):
++        response = await call_next(request)
++        if response.status_code in (401, 403) and not request.url.path.endswith("/login"):
++            log_event("security.access_denied", status=response.status_code, method=request.method,
++                      path=request.url.path, ip=request.client.host if request.client else None)
++        return response
++
++
+ class CSRFProtectionMiddleware(BaseHTTPMiddleware):
+     """Défense en profondeur anti-CSRF.
+ 
+@@ -127,6 +144,8 @@ class CSRFProtectionMiddleware(BaseHTTPMiddleware):
+             if origin:
+                 allowed = settings.get_cors_origins_list()
+                 if origin not in allowed:
++                    log_event("security.csrf_blocked", origin=origin, path=request.url.path,
++                              ip=request.client.host if request.client else None)
+                     return JSONResponse(
+                         status_code=403,
+                         content={"detail": "Origine non autorisée (protection CSRF)."},
+@@ -134,7 +153,11 @@ class CSRFProtectionMiddleware(BaseHTTPMiddleware):
+ 
+         return await call_next(request)
+     
++_IS_PROD = settings.is_production()
+ app = FastAPI(
++    docs_url=None if _IS_PROD else "/docs",
++    redoc_url=None if _IS_PROD else "/redoc",
++    openapi_url=None if _IS_PROD else "/openapi.json",
+     title="SmartExamAI API",
+     description="API FastAPI pour la plateforme SmartExamAI (correction automatique de copies d'examen).",
+      lifespan=lifespan,
+@@ -143,7 +166,8 @@ app = FastAPI(
+ # --- CORS : autorise le frontend React (Vite en dev, build statique en prod) ---
+ _default_origins = "http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000"
+ _allowed_origins = os.environ.get("SMARTEXAM_CORS_ORIGINS", _default_origins).split(",")
+-app.add_middleware(CSRFProtectionMiddleware)           # le plus interne
++app.add_middleware(AuditAccessMiddleware)
++app.add_middleware(CSRFProtectionMiddleware)
+ app.add_middleware(AdvancedSecurityHeadersMiddleware)            # le plus externe (déjà présent)
+ app.add_middleware(
+     CORSMiddleware,
+diff --git a/smartexamai-backend/smartexamai_backend/app/routers/auth.py b/smartexamai-backend/smartexamai_backend/app/routers/auth.py
+index 34213d3..516de9a 100644
+--- a/smartexamai-backend/smartexamai_backend/app/routers/auth.py
++++ b/smartexamai-backend/smartexamai_backend/app/routers/auth.py
+@@ -12,7 +12,8 @@ from pydantic import BaseModel, Field
+ 
+ from app.deps import get_current_user, get_db
+ from app.schemas import LoginRequest, TokenResponse, UserOut
+-from app.security_jwt import create_access_token
++from app.security_jwt import create_access_token, password_fingerprint
++from app.audit import log_event
+ from app.rate_limit import login_limiter
+ from modelss.user import User
+ from repositories.user_repository import UserRepository
+@@ -112,6 +113,7 @@ def login(
+     rate_limit_key = f"login:{client_ip}"
+ 
+     if not login_limiter.is_allowed(rate_limit_key):
++        log_event("auth.rate_limited", username=payload.username, ip=client_ip)
+         raise HTTPException(
+             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+             detail="Trop de tentatives de connexion. Réessayez dans quelques minutes.",
+@@ -122,6 +124,7 @@ def login(
+ 
+     if user is None:
+         # Ne pas révéler si le username existe ou non
++        log_event("auth.login_failed", username=payload.username, ip=client_ip, reason="unknown_user")
+         raise HTTPException(
+             status_code=status.HTTP_401_UNAUTHORIZED,
+             detail="Nom d'utilisateur ou mot de passe incorrect.",
+@@ -129,14 +132,17 @@ def login(
+ 
+     # 3. Vérifier si le compte est verrouillé
+     if _is_locked(user):
++        # ✅ F-02 : même réponse qu'un identifiant inconnu (pas d'énumération de comptes)
++        log_event("auth.login_blocked_locked", username=payload.username, ip=client_ip)
+         raise HTTPException(
+-            status_code=status.HTTP_423_LOCKED,
+-            detail=f"Compte temporairement verrouillé. Réessayez dans {LOCKOUT_DURATION_MINUTES} minutes.",
++            status_code=status.HTTP_401_UNAUTHORIZED,
++            detail="Nom d'utilisateur ou mot de passe incorrect.",
+         )
+ 
+     # 4. Vérifier le mot de passe
+     if not verify_password(payload.password, user.password_hash):
+         _register_failed_login(db, user)
++        log_event("auth.login_failed", username=payload.username, ip=client_ip, reason="bad_password")
+         raise HTTPException(
+             status_code=status.HTTP_401_UNAUTHORIZED,
+             detail="Nom d'utilisateur ou mot de passe incorrect.",
+@@ -151,10 +157,11 @@ def login(
+ 
+     # 6. Succès : réinitialiser les compteurs
+     _register_successful_login(db, user)
++    log_event("auth.login_success", level=20, username=user.username, user_id=user.id, ip=client_ip)
+     login_limiter.reset(rate_limit_key)
+ 
+     # 7. Générer le token
+-    token = create_access_token(user_id=user.id, username=user.username, role=user.role)
++    token = create_access_token(user_id=user.id, username=user.username, role=user.role, pwv=password_fingerprint(user.password_hash))
+ 
+     # ✅ Émettre un refresh token (nouvelle famille de session)
+     refresh = create_refresh_token(
+@@ -235,12 +242,13 @@ def refresh_tokens(
+             ip=request.client.host if request.client else None,
+         )
+     except ValueError as exc:
++        log_event("auth.refresh_rejected", ip=request.client.host if request.client else None, reason=str(exc))
+         raise HTTPException(
+             status_code=status.HTTP_401_UNAUTHORIZED,
+             detail=str(exc),
+         )
+ 
+-    token = create_access_token(user_id=user.id, username=user.username, role=user.role)
++    token = create_access_token(user_id=user.id, username=user.username, role=user.role, pwv=password_fingerprint(user.password_hash))
+ 
+     return TokenResponse(
+         access_token=token,
+diff --git a/smartexamai-backend/smartexamai_backend/app/routers/copies.py b/smartexamai-backend/smartexamai_backend/app/routers/copies.py
+index 74b4c6a..acf98a4 100644
+--- a/smartexamai-backend/smartexamai_backend/app/routers/copies.py
++++ b/smartexamai-backend/smartexamai_backend/app/routers/copies.py
+@@ -51,28 +51,31 @@ def _validate_image_extension(filename: str) -> str:
+     return ext
+ 
+ 
+-def _is_valid_image(content: bytes) -> bool:
+-    """Vérifie si le contenu correspond à une image valide via magic bytes."""
+-    if len(content) < 4:
+-        return False
++_EXT_KIND = {".png": "png", ".jpg": "jpeg", ".jpeg": "jpeg", ".tiff": "tiff", ".bmp": "bmp", ".pdf": "pdf"}
++_BMP_DIB_SIZES = {12, 40, 52, 56, 64, 108, 124}
++
+ 
+-    # PNG
++def _sniff_kind(content: bytes) -> str | None:
++    """Détecte le vrai type du fichier par sa signature binaire (et non par son extension)."""
+     if content[:8] == b"\x89PNG\r\n\x1a\n":
+-        return True
+-    # JPEG
+-    if content[:2] == b"\xff\xd8":
+-        return True
+-    # TIFF
+-    if content[:4] == b"II\x2a\x00" or content[:4] == b"MM\x00\x2a":
+-        return True
+-    # BMP
+-    if content[:2] == b"BM":
+-        return True
+-    # PDF
+-    if content[:4] == b"%PDF":
+-        return True
+-
+-    return False
++        return "png"
++    if content[:3] == b"\xff\xd8\xff":
++        return "jpeg"
++    if content[:4] in (b"II\x2a\x00", b"MM\x00\x2a"):
++        return "tiff"
++    if content[:2] == b"BM" and len(content) >= 18 and int.from_bytes(content[14:18], "little") in _BMP_DIB_SIZES:
++        return "bmp"
++    if content[:5] == b"%PDF-":
++        return "pdf"
++    return None
++
++
++def _is_valid_image(content: bytes, ext: str | None = None) -> bool:
++    """Valide le contenu réel ET sa cohérence avec l'extension déclarée (F-04)."""
++    kind = _sniff_kind(content)
++    if kind is None:
++        return False
++    return ext is None or _EXT_KIND.get(ext.lower()) == kind
+ 
+ 
+ # ============================================================================
+@@ -133,7 +136,7 @@ async def deposer_copie(
+                 )
+ 
+             # ✅ 6. Vérifier que c'est bien une image (magic bytes)
+-            if not _is_valid_image(content):
++            if not _is_valid_image(content, ext):
+                 raise HTTPException(
+                     status_code=415,
+                     detail=f"Le fichier '{upload.filename}' n'est pas une image valide.",
+diff --git a/smartexamai-backend/smartexamai_backend/app/routers/users.py b/smartexamai-backend/smartexamai_backend/app/routers/users.py
+index 76e2857..1602a1c 100644
+--- a/smartexamai-backend/smartexamai_backend/app/routers/users.py
++++ b/smartexamai-backend/smartexamai_backend/app/routers/users.py
+@@ -9,6 +9,7 @@ from app.deps import get_db, require_admin
+ from app.schemas import UserCreate, UserOut, UserUpdate
+ from core.exceptions import DuplicateEntityError, UserNotFoundError
+ from modelss.enums import RoleUtilisateur
++from modelss.user import User
+ from service.admin.user_management_service import UserManagementService
+ import re
+ 
+@@ -43,6 +44,11 @@ def create_user(payload: UserCreate, db: Session = Depends(get_db)):
+     if errors:
+         raise HTTPException(status_code=400, detail=" ".join(errors))
+ 
++    # ✅ F-13 : unicité insensible à la casse (pas de comptes sosies « Admin » / « admin »)
++    from sqlalchemy import func
++    if db.query(User).filter(func.lower(User.username) == payload.username.lower()).first():
++        raise HTTPException(status_code=409, detail="Ce nom d'utilisateur existe déjà.")
++
+     try:
+         user = UserManagementService(db).create_user(
+             username=payload.username,
+diff --git a/smartexamai-backend/smartexamai_backend/app/security_jwt.py b/smartexamai-backend/smartexamai_backend/app/security_jwt.py
+index c9f94c4..017a9a4 100644
+--- a/smartexamai-backend/smartexamai_backend/app/security_jwt.py
++++ b/smartexamai-backend/smartexamai_backend/app/security_jwt.py
+@@ -23,12 +23,19 @@ class InvalidTokenError(Exception):
+     pass
+ 
+ 
+-def create_access_token(*, user_id: int, username: str, role: str) -> str:
++def password_fingerprint(password_hash: str) -> str:
++    """Empreinte courte du hash courant : change dès que le mot de passe change (révocation des jetons)."""
++    import hashlib
++    return hashlib.sha256(password_hash.encode()).hexdigest()[:16]
++
++
++def create_access_token(*, user_id: int, username: str, role: str, pwv: str = "") -> str:
+     now = datetime.now(timezone.utc)
+     payload: Dict[str, Any] = {
+         "sub": str(user_id),
+         "username": username,
+         "role": role,
++        "pwv": pwv,
+         "iat": now,
+         "exp": now + timedelta(minutes=JWT_EXPIRE_MINUTES),
+     }
